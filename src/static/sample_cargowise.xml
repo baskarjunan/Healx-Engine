@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<UniversalShipment xmlns="http://www.cargowise.com/schemas/universal/2011/11">
+    <Shipment>
+        <DataContext>
+            <EnterpriseID>TVS</EnterpriseID>
+            <CompanyCode>MAA</CompanyCode>
+            <ServerID>CW1</ServerID>
+        </DataContext>
+        <BookingNumber>CW-2026-99482</BookingNumber>
+        <ContainerNumber>MSKU8294012</ContainerNumber>
+        <WeightDetails>
+            <DeclaredWeight>12400.00</DeclaredWeight>
+            <VerifiedGrossMass>12400.00</VerifiedGrossMass>
+            <WeightUnit>KG</WeightUnit>
+        </WeightDetails>
+        <DischargePort>
+            <PortCode>INMAA</PortCode>
+            <PortName>Chennai Port</PortName>
+            <EstimatedArrival>2026-09-25T14:00:00</EstimatedArrival>
+        </DischargePort>
+        <DiscrepancyResolution>
+            <Status>AUTO_HEALED</Status>
+            <IssueDetected>Weight Mismatch &amp; Late Manifest Filing</IssueDetected>
+            <FinePreventionUSD>450.00</FinePreventionUSD>
+            <FineType>Port Misdeclaration Penalty</FineType>
+        </DiscrepancyResolution>
+    </Shipment>
+</UniversalShipment>
+
+<UniversalShipment xmlns="http://www.cargowise.com/eAdaptor/schemas/universal/2011/03">
+    <Shipment>
+        <HouseBL>HBL99283741</HouseBL>
+        <GrossWeight>500.0</GrossWeight>
+        <GrossVolume>2.45</GrossVolume>
+        <Incoterm>FOB</Incoterm>
+        <ContainerNumber>fdds1234567</ContainerNumber>
+        <SealNumber>SL987654</SealNumber>
+        <ContainerType>40HC</ContainerType>
+        <HSCode>85171200</HSCode>
+    </Shipment>
+</UniversalShipment>
+
+<UniversalShipment xmlns="http://www.cargowise.com/eAdaptor/schemas/universal/2011/03">
+    <Shipment>
+        <HouseBL>HBL99283741</HouseBL>
+        <GrossWeight>500.0</GrossWeight>
+        <GrossVolume>2.45</GrossVolume>
+        <Incoterm>FOB</Incoterm>
+        <ContainerNumber>fdds1234567</ContainerNumber>
+        <SealNumber>SL987654</SealNumber>
+        <ContainerType>40HC</ContainerType>
+        <HSCode>85171200</HSCode>
+    </Shipment>
+</UniversalShipment>

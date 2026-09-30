@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="or">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HealX Middleware Engine</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen p-8">
+
+    <div class="max-w-6xl mx-auto space-y-8">
+        <!-- Header -->
+        <div class="border-b border-slate-800 pb-5 flex justify-between items-center">
+            <div>
+                <h1 class="text-3xl font-bold tracking-tight text-emerald-400">HealX Engine Dashboard</h1>
+                <p class="text-sm text-slate-400 mt-1">CargoWise Automated eDocs Reconciliation & Healing System</p>
+            </div>
+            <span class="px-3 py-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 rounded-full text-xs font-semibold">
+                ● System Active
+            </span>
+        </div>
+
+        <!-- Operational Metrics -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div class="bg-slate-900 border border-slate-800 rounded-xl p-6">
+                <h3 class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Active Messages</h3>
+                <p id="active_messages" class="text-4xl font-extrabold text-white mt-3">...</p>
+                <p class="text-xs text-slate-500 mt-2">Total CargoWise XML eDocs Processed</p>
+            </div>
+
+            <div class="bg-slate-900 border border-slate-800 rounded-xl p-6">
+                <h3 class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Self-Healed XMLs</h3>
+                <p id="self_healed" class="text-4xl font-extrabold text-emerald-400 mt-3">...</p>
+                <p class="text-xs text-slate-500 mt-2">Auto-corrected weight/container mismatches</p>
+            </div>
+
+            <div class="bg-slate-900 border border-slate-800 rounded-xl p-6">
+                <h3 class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Heal Success Rate</h3>
+                <p id="heal_rate" class="text-4xl font-extrabold text-blue-400 mt-3">...</p>
+                <p class="text-xs text-slate-500 mt-2">Automated resolution efficiency</p>
+            </div>
+        </div>
+
+        <!-- Financial Impact -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-6">
+            <h2 class="text-lg font-bold text-white mb-4">Financial Fine Savings Summary</h2>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+                <div class="bg-slate-950 p-5 rounded-lg border border-slate-800">
+                    <p class="text-xs font-medium text-slate-400 uppercase">Port Fines Saved</p>
+                    <p id="port_fines" class="text-2xl font-bold text-emerald-400 mt-2">...</p>
+                </div>
+
+                <div class="bg-slate-950 p-5 rounded-lg border border-slate-800">
+                    <p class="text-xs font-medium text-slate-400 uppercase">Demurrage Saved</p>
+                    <p id="demurrage" class="text-2xl font-bold text-emerald-400 mt-2">...</p>
+                </div>
+
+                <div class="bg-slate-950 p-5 rounded-lg border border-slate-800">
+                    <p class="text-xs font-medium text-slate-400 uppercase">Total Fine Prevention</p>
+                    <p id="total_saved" class="text-2xl font-bold text-yellow-400 mt-2">...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Fetch metrics data from API
+        fetch('/api/v1/dashboard/metrics')
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('active_messages').innerText = data.active_messages.toLocaleString();
+                document.getElementById('self_healed').innerText = data.self_healed.toLocaleString();
+                document.getElementById('heal_rate').innerText = data.heal_rate + '%';
+                document.getElementById('port_fines').innerText = '$' + data.port_fines_saved_usd.toFixed(2) + ' USD';
+                document.getElementById('demurrage').innerText = '$' + data.demurrage_saved_usd.toFixed(2) + ' USD';
+                document.getElementById('total_saved').innerText = '$' + data.total_saved_usd.toFixed(2) + ' USD';
+            })
+            .catch(error => {
+                console.error('Error fetching data:', error);
+            });
+    </script>
+</body>
+</html>

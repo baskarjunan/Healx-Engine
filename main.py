@@ -7,7 +7,7 @@ import re
 
 app = FastAPI(
     title="AuraLogix HealX Autonomous Engine", 
-    version="3.2.0"
+    version="3.3.0"
 )
 
 # Simulation Database & Metrics
@@ -111,40 +111,35 @@ def autonomous_healing_worker(shipment_id: str, xml_str: str, edoc_text: str):
     
     print(f"[HealX Engine] Shipment {shipment_id} processed successfully. Status: {eadaptor_status}. Healed: {is_healed}")
 
-# --- Autonomous Webhook Ingestion Endpoint (Supports both JSON & Raw XML from CargoWise) ---
+# --- Autonomous Webhook Ingestion Endpoint (Supports both JSON & Raw XML safely) ---
 @app.post("/api/v1/webhook/ingest-autonomous")
 async def receive_shipment_webhook(request: Request, background_tasks: BackgroundTasks):
-    """
-    Handles incoming webhooks from CargoWise eAdaptor. Supports JSON body or Raw XML payload strings.
-    """
     body_bytes = await request.body()
-    content_type = request.headers.get("content-type", "")
+    body_str = body_bytes.decode("utf-8", errors="ignore").strip()
     
     shipment_id = "CW-SHIPMENT-LIVE"
     xml_payload = ""
     edoc_text = ""
 
     try:
-        if "application/json" in content_type:
-            data = json.loads(body_bytes.decode("utf-8"))
+        if body_str.startswith("{") or body_str.startswith("["):
+            data = json.loads(body_str)
             shipment_id = data.get("shipment_id", "CW-SHIPMENT-LIVE")
-            xml_payload = data.get("xml_payload", "")
+            xml_payload = data.get("xml_payload", body_str)
             edoc_text = data.get("edoc_source_text", "")
         else:
-            # If CargoWise pushes raw XML directly as text/plain or application/xml
-            xml_payload = body_bytes.decode("utf-8")
-            # Try to extract a shipment ID from XML if present, else fallback
+            xml_payload = body_str
             match_id = re.search(r'<HouseBill[^>]*>([^<]+)</HouseBill>', xml_payload)
             if match_id:
                 shipment_id = match_id.group(1)
     except Exception as e:
-        print(f"[HealX Error] Failed to parse incoming webhook payload: {str(e)}")
-        raise HTTPException(status_code=400, detail="Invalid Payload Format")
+        print(f"[HealX Error] Payload decoding issue: {str(e)}")
+        xml_payload = body_str  # Fallback to raw string
 
     if not xml_payload:
-        raise HTTPException(status_code=422, detail="Missing xml_payload in request body")
+        raise HTTPException(status_code=422, detail="Empty XML Payload received")
 
-    # Add to background processing queue
+    # Add to background worker
     background_tasks.add_task(
         autonomous_healing_worker, 
         shipment_id, 
@@ -154,7 +149,7 @@ async def receive_shipment_webhook(request: Request, background_tasks: Backgroun
     
     return {
         "status": "ACCEPTED",
-        "message": "Payload and eDOC/Text received. HealX autonomous background processing initiated.",
+        "message": "HealX autonomous background processing initiated.",
         "shipment_id": shipment_id
     }
 

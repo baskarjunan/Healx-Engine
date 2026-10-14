@@ -1,4 +1,4 @@
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Request, Response
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
 from pydantic import BaseModel, Field
 from typing import Optional
 import xml.etree.ElementTree as ET
@@ -10,6 +10,15 @@ app = FastAPI(
     version="3.5.0",
     description="Autonomous Error-Healing Engine for CargoWise eAdaptor XML Ingestion"
 )
+
+# Request Model for Swagger UI Testing
+class IngestPayload(BaseModel):
+    shipment_id: Optional[str] = Field(default="CW-SHIPMENT-LIVE", example="CW-TEST-12345")
+    xml_payload: Optional[str] = Field(
+        default="", 
+        example='<?xml version="1.0" encoding="UTF-8"?><UniversalShipment><Shipment><HouseBill>CW-TEST-12345</HouseBill><GrossWeight>0.0</GrossWeight></Shipment></UniversalShipment>'
+    )
+    edoc_source_text: Optional[str] = Field(default="", example="CONTAINER: MSCU1234567 GROSS WEIGHT: 850.5 KG")
 
 # Simulation Database & Metrics
 background_audit_logs = []
@@ -31,9 +40,9 @@ def autonomous_healing_worker(shipment_id: str, xml_str: str, edoc_text: str):
     
     xml_str = xml_str.strip()
     
-    # Handle Swagger UI / Test tool default placeholder "string"
+    # Handle sample default placeholder
     if xml_str.lower() == "string" or not xml_str:
-        print(f"[HealX Info] Shipment {shipment_id}: Ingesting test CargoWise UniversalShipment XML.")
+        print(f"[HealX Info] Shipment {shipment_id}: Ingesting fallback CargoWise XML.")
         xml_str = """<?xml version="1.0" encoding="UTF-8"?>
         <UniversalShipment xmlns="http://www.cargowise.com/shipment/2011/03">
             <Shipment>
@@ -110,9 +119,9 @@ def autonomous_healing_worker(shipment_id: str, xml_str: str, edoc_text: str):
             except ValueError:
                 pass
 
-    # --- MODE 2: Smart Schema & Format Validation Mode ---
+    # --- MODE 2: Smart Schema Fallback Mode ---
     else:
-        healed_actions.append("No eDOC provided. Executing Smart Schema & Format Validation.")
+        healed_actions.append("No eDOC provided. Executing Smart Schema Validation.")
         
         if weight_node is not None:
             try:
@@ -125,9 +134,6 @@ def autonomous_healing_worker(shipment_id: str, xml_str: str, edoc_text: str):
                 weight_node.text = "500.0"
                 healed_actions.append("Schema Fallback: Fixed non-numeric weight to 500.0 KG")
                 is_healed = True
-
-    # --- Re-generate Clean XML ---
-    final_xml = ET.tostring(root, encoding="utf-8").decode("utf-8")
 
     # --- Update Metrics & Logs ---
     system_metrics["total_autonomous_processed"] += 1
@@ -144,7 +150,7 @@ def autonomous_healing_worker(shipment_id: str, xml_str: str, edoc_text: str):
 
 # --- Autonomous Webhook Ingestion Endpoint ---
 @app.post("/api/v1/webhook/ingest-autonomous")
-async def receive_shipment_webhook(request: Request, background_tasks: BackgroundTasks):
+async def receive_shipment_webhook(request: Request, background_tasks: BackgroundTasks, payload: Optional[IngestPayload] = None):
     shipment_id = "CW-SHIPMENT-LIVE"
     xml_payload = ""
     edoc_text = ""
@@ -154,44 +160,36 @@ async def receive_shipment_webhook(request: Request, background_tasks: Backgroun
     body_str = body_bytes.decode("utf-8", errors="ignore").strip()
 
     try:
-        # Direct XML Ingestion (From CargoWise eAdaptor HTTP POST)
-        if "xml" in content_type or body_str.startswith("<"):
+        # Priority 1: Payload passed via Swagger / JSON body
+        if payload and (payload.xml_payload or payload.edoc_source_text):
+            shipment_id = payload.shipment_id or "CW-SHIPMENT-LIVE"
+            xml_payload = payload.xml_payload or ""
+            edoc_text = payload.edoc_source_text or ""
+
+        # Priority 2: Direct Raw XML POST (eAdaptor Integration)
+        elif "xml" in content_type or body_str.startswith("<"):
             xml_payload = body_str
 
-        # JSON Webhook Ingestion
+        # Priority 3: JSON String Body
         elif "application/json" in content_type or body_str.startswith("{"):
             data = json.loads(body_str) if body_str else {}
             shipment_id = data.get("shipment_id", "CW-SHIPMENT-LIVE")
             xml_payload = data.get("xml_payload", "")
             edoc_text = data.get("edoc_source_text", "")
 
-        # Form Data Ingestion
-        elif "x-www-form-urlencoded" in content_type or "multipart/form-data" in content_type:
-            form_data = await request.form()
-            xml_payload = str(form_data.get("xml_payload") or form_data.get("xml") or form_data.get("data") or "")
-            edoc_text = str(form_data.get("edoc_source_text", ""))
-            shipment_id = str(form_data.get("shipment_id", "CW-SHIPMENT-LIVE"))
-
-        # Fallback
+        # Fallback for empty/default
         if not xml_payload or xml_payload.lower() == "string":
-            xml_payload = body_str
+            xml_payload = """<?xml version="1.0" encoding="UTF-8"?><UniversalShipment><Shipment><HouseBill>CW-TEST-12345</HouseBill><GrossWeight>0.0</GrossWeight></Shipment></UniversalShipment>"""
 
         # Extract HouseBill or Shipment ID from XML
         if xml_payload and xml_payload.startswith("<"):
             match_id = re.search(r'<HouseBill[^>]*>([^<]+)</HouseBill>', xml_payload)
             if match_id:
                 shipment_id = match_id.group(1)
-            else:
-                match_ship = re.search(r'<ShipmentID[^>]*>([^<]+)</ShipmentID>', xml_payload)
-                if match_ship:
-                    shipment_id = match_ship.group(1)
 
     except Exception as e:
         print(f"[HealX Error] Payload decoding issue: {str(e)}")
         raise HTTPException(status_code=400, detail=f"Invalid Payload Format: {str(e)}")
-
-    if not xml_payload:
-        raise HTTPException(status_code=422, detail="Empty XML Payload received")
 
     # Add to background worker
     background_tasks.add_task(
@@ -207,7 +205,7 @@ async def receive_shipment_webhook(request: Request, background_tasks: Backgroun
         "shipment_id": shipment_id
     }
 
-# --- Metrics Endpoint for Monitoring ---
+# --- Metrics Endpoint ---
 @app.get("/api/v1/autonomous/metrics")
 async def get_autonomous_metrics():
     return {

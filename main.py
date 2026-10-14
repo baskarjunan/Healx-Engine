@@ -12,26 +12,23 @@ app = FastAPI(
     description="Autonomous Error-Healing Engine with eDOC Extraction & Bi-directional CargoWise Sync"
 )
 
-# --- CONFIGURATION: CargoWise eAdaptor Inbound URL ---
-# USAT Sandbox Inbound Web Service Endpoint
+# --- CONFIGURATION: CargoWise eAdaptor Inbound URL & Credentials ---
 CARGOWISE_EADAPTOR_INBOUND_URL = "https://cw1trainingaustd.cargowise.com/eAdaptor/Inbound"
+
+# Configured from CargoWise System Registry Inbound Basic Auth
+CW_USERNAME = "SALESTESTUSER32"
+CW_PASSWORD = "dHa+2ofECntb09Vf6Wp4aSb"
 
 class IngestPayload(BaseModel):
     shipment_id: Optional[str] = Field(default="WRCHI0001339", example="WRCHI0001339")
-    xml_payload: Optional[str] = Field(
-        default="", 
-        example='<?xml version="1.0" encoding="UTF-8"?><UniversalShipment xmlns="http://www.cargowise.com/shipment/2011/03"><Shipment><HouseBill>WRCHI0001339</HouseBill><GrossWeight>0.0</GrossWeight></Shipment></UniversalShipment>'
-    )
-    edoc_source_text: Optional[str] = Field(
-        default="", 
-        example="COMMERCIAL INVOICE / PACKING LIST - CONTAINER: MSCU1234567 GROSS WEIGHT: 1250.00 KG"
-    )
+    xml_payload: Optional[str] = Field(default="", example="")
+    edoc_source_text: Optional[str] = Field(default="", example="COMMERCIAL INVOICE - CONTAINER: MSCU1234567 GROSS WEIGHT: 500.00 KG")
 
 # Simulation Database & Metrics
 background_audit_logs = []
 system_metrics = {
-    "total_autonomous_processed": 1853,
-    "auto_healed_count": 1031,
+    "total_autonomous_processed": 1856,
+    "auto_healed_count": 1033,
     "fines_prevented_usd": 2800.0
 }
 
@@ -43,23 +40,28 @@ def find_xml_node(element, tag_name):
     return None
 
 def send_to_eadaptor(xml_payload: str) -> bool:
-    """Sends the healed XML payload back to CargoWise eAdaptor Inbound so UI & DB update automatically."""
-    headers = {"Content-Type": "application/xml; charset=utf-8"}
+    """Sends the healed XML payload back to CargoWise eAdaptor Inbound using Basic Authentication."""
+    headers = {
+        "Content-Type": "application/xml; charset=utf-8",
+        "EnterpriseID": "ALG",
+        "ServerID": "SYD"
+    }
     try:
         response = requests.post(
             CARGOWISE_EADAPTOR_INBOUND_URL, 
             data=xml_payload.encode('utf-8'), 
             headers=headers, 
+            auth=(CW_USERNAME, CW_PASSWORD),
             timeout=15
         )
         if response.status_code in [200, 202]:
             print(f"[HealX Sync Success] Healed XML successfully pushed to CargoWise Inbound: {response.status_code}")
             return True
         else:
-            print(f"[HealX Sync Info] CargoWise Inbound HTTP status: {response.status_code}")
+            print(f"[HealX Sync Error] CargoWise Inbound HTTP status: {response.status_code}, Response: {response.text}")
             return False
     except Exception as e:
-        print(f"[HealX Sync Exception] Inbound endpoint unreachable or offline: {str(e)}")
+        print(f"[HealX Sync Exception] Inbound endpoint unreachable: {str(e)}")
         return False
 
 def autonomous_healing_worker(shipment_id: str, xml_str: str, edoc_text: str):
@@ -106,22 +108,23 @@ def autonomous_healing_worker(shipment_id: str, xml_str: str, edoc_text: str):
 
     weight_node = find_xml_node(root, "GrossWeight")
     container_node = find_xml_node(root, "ContainerNumber")
+    housebill_node = find_xml_node(root, "HouseBill")
+
+    if housebill_node is not None and housebill_node.text:
+        shipment_id = housebill_node.text.strip()
 
     # --- MODE 1: eDOC Cross-Verification (BL / CIV / PKL Text Extraction) ---
     if edoc_text and edoc_text.strip() != "":
         edoc_upper = edoc_text.upper()
         
-        # Regex to extract Container Number (e.g. MSCU1234567)
         container_match = re.search(r'\b[A-Z]{4}[0-9]{7}\b', edoc_upper)
         if container_match:
             extracted_truth["ContainerNumber"] = container_match.group(0)
             
-        # Regex to extract Weight from BL / CIV / PKL text keywords
         weight_match = re.search(r'(?:WEIGHT|GW|GROSS|TOTAL|KGS|KG)[^\d]*([\d]+\.?[\d]*)', edoc_upper)
         if weight_match:
             extracted_truth["GrossWeight"] = weight_match.group(1)
 
-        # Reconcile Container Number
         if container_node is not None:
             xml_cont = container_node.text.strip().upper() if container_node.text else ""
             true_cont = extracted_truth.get("ContainerNumber")
@@ -130,7 +133,6 @@ def autonomous_healing_worker(shipment_id: str, xml_str: str, edoc_text: str):
                 healed_actions.append(f"eDOC Reconciled Container: {xml_cont} -> {true_cont}")
                 is_healed = True
 
-        # Reconcile Weight from eDOC
         if weight_node is not None:
             xml_wt = weight_node.text.strip() if weight_node.text else "0"
             try:
@@ -160,7 +162,7 @@ def autonomous_healing_worker(shipment_id: str, xml_str: str, edoc_text: str):
     # --- Generate Clean Healed XML ---
     final_xml = ET.tostring(root, encoding="utf-8").decode("utf-8")
 
-    # --- Push Healed XML back to CargoWise Inbound ---
+    # --- Push Healed XML back to CargoWise Inbound with Auth ---
     sync_status = send_to_eadaptor(final_xml)
     if sync_status:
         healed_actions.append("Successfully synced healed XML back to CargoWise database.")
@@ -176,7 +178,7 @@ def autonomous_healing_worker(shipment_id: str, xml_str: str, edoc_text: str):
         "status": "AUTONOMOUSLY_HEALED_AND_SYNCED" if is_healed else "PROCESSED_SUCCESS"
     })
     
-    print(f"[HealX Engine] Shipment {shipment_id} processed successfully. Healed: {is_healed}")
+    print(f"[HealX Engine] Shipment {shipment_id} processed. Synced: {sync_status}")
 
 # --- Autonomous Webhook Ingestion Endpoint ---
 @app.post("/api/v1/webhook/ingest-autonomous")

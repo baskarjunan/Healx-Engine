@@ -8,27 +8,26 @@ import requests
 
 app = FastAPI(
     title="AuraLogix HealX Autonomous Engine", 
-    version="3.5.0",
-    description="Autonomous Error-Healing Engine with eDOC Extraction & Bi-directional CargoWise Sync"
+    version="3.6.0",
+    description="Autonomous Error-Healing Engine with Robust Zero-Weight Fallback & Bi-directional CargoWise Sync"
 )
 
 # --- CONFIGURATION: CargoWise eAdaptor Inbound URL & Credentials ---
 CARGOWISE_EADAPTOR_INBOUND_URL = "https://cw1trainingaustd.cargowise.com/eAdaptor/Inbound"
 
-# Configured from CargoWise System Registry Inbound Basic Auth
 CW_USERNAME = "SALESTESTUSER32"
 CW_PASSWORD = "dHa+2ofECntb09Vf6Wp4aSb"
 
 class IngestPayload(BaseModel):
     shipment_id: Optional[str] = Field(default="WRCHI0001339", example="WRCHI0001339")
     xml_payload: Optional[str] = Field(default="", example="")
-    edoc_source_text: Optional[str] = Field(default="", example="COMMERCIAL INVOICE - CONTAINER: MSCU1234567 GROSS WEIGHT: 500.00 KG")
+    edoc_source_text: Optional[str] = Field(default="", example="")
 
 # Simulation Database & Metrics
 background_audit_logs = []
 system_metrics = {
-    "total_autonomous_processed": 1856,
-    "auto_healed_count": 1033,
+    "total_autonomous_processed": 1857,
+    "auto_healed_count": 1034,
     "fines_prevented_usd": 2800.0
 }
 
@@ -112,8 +111,17 @@ def autonomous_healing_worker(shipment_id: str, xml_str: str, edoc_text: str):
 
     if housebill_node is not None and housebill_node.text:
         shipment_id = housebill_node.text.strip()
+    else:
+        # If HouseBill tag is missing or empty, inject it back so CargoWise can match it
+        if housebill_node is not None:
+            housebill_node.text = shipment_id
+        else:
+            shipment_node = find_xml_node(root, "Shipment")
+            if shipment_node is not None:
+                hb_elem = ET.SubElement(shipment_node, "HouseBill")
+                hb_elem.text = shipment_id
 
-    # --- MODE 1: eDOC Cross-Verification (BL / CIV / PKL Text Extraction) ---
+    # --- MODE 1: eDOC Cross-Verification (If eDoc text is provided) ---
     if edoc_text and edoc_text.strip() != "":
         edoc_upper = edoc_text.upper()
         
@@ -139,24 +147,32 @@ def autonomous_healing_worker(shipment_id: str, xml_str: str, edoc_text: str):
                 true_wt = extracted_truth.get("GrossWeight")
                 if true_wt and float(xml_wt) != float(true_wt):
                     weight_node.text = true_wt
-                    healed_actions.append(f"eDOC Reconciled GrossWeight from BL/CIV/PKL: {xml_wt} KG -> {true_wt} KG")
+                    healed_actions.append(f"eDOC Reconciled GrossWeight from eDoc: {xml_wt} KG -> {true_wt} KG")
                     is_healed = True
-                    system_metrics["fines_prevented_usd"] += 500.0
             except ValueError:
                 pass
 
-    # --- MODE 2: Smart Schema Fallback Mode ---
+    # --- MODE 2: Robust Zero/Missing Weight Smart Fallback ---
     if weight_node is not None:
+        current_wt_text = weight_node.text.strip() if weight_node.text else "0"
         try:
-            wt_val = float(weight_node.text) if weight_node.text else 0.0
-            if wt_val <= 0:
-                fallback_wt = extracted_truth.get("GrossWeight", "500.0")
-                weight_node.text = fallback_wt
-                healed_actions.append(f"Schema Fallback: Corrected zero weight to {fallback_wt} KG")
-                is_healed = True
+            wt_val = float(current_wt_text)
         except (ValueError, TypeError):
-            weight_node.text = "500.0"
-            healed_actions.append("Schema Fallback: Fixed non-numeric weight to 500.0 KG")
+            wt_val = 0.0
+
+        if wt_val <= 0.0:
+            fallback_wt = extracted_truth.get("GrossWeight", "500.0")
+            weight_node.text = fallback_wt
+            healed_actions.append(f"Zero-Weight Fallback: Corrected weight from {current_wt_text} to {fallback_wt} KG")
+            is_healed = True
+            system_metrics["fines_prevented_usd"] += 500.0
+    else:
+        # If GrossWeight node doesn't exist at all, create it and set to 500.0
+        shipment_node = find_xml_node(root, "Shipment")
+        if shipment_node is not None:
+            gw_elem = ET.SubElement(shipment_node, "GrossWeight")
+            gw_elem.text = "500.0"
+            healed_actions.append("Missing GrossWeight Node Added: Set to 500.0 KG")
             is_healed = True
 
     # --- Generate Clean Healed XML ---

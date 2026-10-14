@@ -1,4 +1,4 @@
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from typing import Optional
 import xml.etree.ElementTree as ET
@@ -7,7 +7,8 @@ import re
 
 app = FastAPI(
     title="AuraLogix HealX Autonomous Engine", 
-    version="3.3.0"
+    version="3.5.0",
+    description="Autonomous Error-Healing Engine for CargoWise eAdaptor XML Ingestion"
 )
 
 # Simulation Database & Metrics
@@ -18,14 +19,45 @@ system_metrics = {
     "fines_prevented_usd": 2800.0
 }
 
-class ShipmentIngestRequest(BaseModel):
-    shipment_id: Optional[str] = "CW-DEFAULT-ID"
-    xml_payload: str
-    edoc_source_text: Optional[str] = ""
+def find_xml_node(element, tag_name):
+    """Helper to locate XML nodes ignoring CargoWise namespaces."""
+    for elem in element.iter():
+        if elem.tag.endswith(tag_name):
+            return elem
+    return None
 
 def autonomous_healing_worker(shipment_id: str, xml_str: str, edoc_text: str):
     global system_metrics
     
+    xml_str = xml_str.strip()
+    
+    # Handle Swagger UI / Test tool default placeholder "string"
+    if xml_str.lower() == "string" or not xml_str:
+        print(f"[HealX Info] Shipment {shipment_id}: Ingesting test CargoWise UniversalShipment XML.")
+        xml_str = """<?xml version="1.0" encoding="UTF-8"?>
+        <UniversalShipment xmlns="http://www.cargowise.com/shipment/2011/03">
+            <Shipment>
+                <DataContext>
+                    <Company><Code>TRN</Code></Company>
+                    <EnterpriseID>ALG</EnterpriseID>
+                    <ServerID>SYD</ServerID>
+                </DataContext>
+                <HouseBill>CW-TEST-12345</HouseBill>
+                <ContainerNumber>MSCU1234567</ContainerNumber>
+                <GrossWeight>0.0</GrossWeight>
+            </Shipment>
+        </UniversalShipment>"""
+        shipment_id = "CW-TEST-12345"
+
+    if not xml_str.startswith("<"):
+        print(f"[HealX Error] Shipment {shipment_id}: Payload is not valid XML.")
+        background_audit_logs.append({
+            "shipment_id": shipment_id,
+            "actions": ["Payload is not valid XML"],
+            "status": "NON_XML_REJECTED"
+        })
+        return
+
     try:
         root = ET.fromstring(xml_str)
     except ET.ParseError as e:
@@ -41,8 +73,8 @@ def autonomous_healing_worker(shipment_id: str, xml_str: str, edoc_text: str):
     is_healed = False
     healed_actions = []
 
-    weight_node = root.find(".//GrossWeight")
-    container_node = root.find(".//ContainerNumber")
+    weight_node = find_xml_node(root, "GrossWeight")
+    container_node = find_xml_node(root, "ContainerNumber")
 
     # --- MODE 1: eDOC Cross-Verification Mode ---
     if edoc_text and edoc_text.strip() != "":
@@ -89,14 +121,13 @@ def autonomous_healing_worker(shipment_id: str, xml_str: str, edoc_text: str):
                     weight_node.text = "500.0"
                     healed_actions.append("Schema Fallback: Corrected zero/negative weight to 500.0 KG")
                     is_healed = True
-            except ValueError:
+            except (ValueError, TypeError):
                 weight_node.text = "500.0"
                 healed_actions.append("Schema Fallback: Fixed non-numeric weight to 500.0 KG")
                 is_healed = True
 
-    # --- Mock eAdaptor Ingestion ---
+    # --- Re-generate Clean XML ---
     final_xml = ET.tostring(root, encoding="utf-8").decode("utf-8")
-    eadaptor_status = "SUCCESS"
 
     # --- Update Metrics & Logs ---
     system_metrics["total_autonomous_processed"] += 1
@@ -109,32 +140,55 @@ def autonomous_healing_worker(shipment_id: str, xml_str: str, edoc_text: str):
         "status": "AUTONOMOUSLY_HEALED" if is_healed else "PROCESSED_SUCCESS"
     })
     
-    print(f"[HealX Engine] Shipment {shipment_id} processed successfully. Status: {eadaptor_status}. Healed: {is_healed}")
+    print(f"[HealX Engine] Shipment {shipment_id} processed successfully. Healed: {is_healed}")
 
-# --- Autonomous Webhook Ingestion Endpoint (Supports both JSON & Raw XML safely) ---
+# --- Autonomous Webhook Ingestion Endpoint ---
 @app.post("/api/v1/webhook/ingest-autonomous")
 async def receive_shipment_webhook(request: Request, background_tasks: BackgroundTasks):
-    body_bytes = await request.body()
-    body_str = body_bytes.decode("utf-8", errors="ignore").strip()
-    
     shipment_id = "CW-SHIPMENT-LIVE"
     xml_payload = ""
     edoc_text = ""
 
+    content_type = request.headers.get("content-type", "").lower()
+    body_bytes = await request.body()
+    body_str = body_bytes.decode("utf-8", errors="ignore").strip()
+
     try:
-        if body_str.startswith("{") or body_str.startswith("["):
-            data = json.loads(body_str)
-            shipment_id = data.get("shipment_id", "CW-SHIPMENT-LIVE")
-            xml_payload = data.get("xml_payload", body_str)
-            edoc_text = data.get("edoc_source_text", "")
-        else:
+        # Direct XML Ingestion (From CargoWise eAdaptor HTTP POST)
+        if "xml" in content_type or body_str.startswith("<"):
             xml_payload = body_str
+
+        # JSON Webhook Ingestion
+        elif "application/json" in content_type or body_str.startswith("{"):
+            data = json.loads(body_str) if body_str else {}
+            shipment_id = data.get("shipment_id", "CW-SHIPMENT-LIVE")
+            xml_payload = data.get("xml_payload", "")
+            edoc_text = data.get("edoc_source_text", "")
+
+        # Form Data Ingestion
+        elif "x-www-form-urlencoded" in content_type or "multipart/form-data" in content_type:
+            form_data = await request.form()
+            xml_payload = str(form_data.get("xml_payload") or form_data.get("xml") or form_data.get("data") or "")
+            edoc_text = str(form_data.get("edoc_source_text", ""))
+            shipment_id = str(form_data.get("shipment_id", "CW-SHIPMENT-LIVE"))
+
+        # Fallback
+        if not xml_payload or xml_payload.lower() == "string":
+            xml_payload = body_str
+
+        # Extract HouseBill or Shipment ID from XML
+        if xml_payload and xml_payload.startswith("<"):
             match_id = re.search(r'<HouseBill[^>]*>([^<]+)</HouseBill>', xml_payload)
             if match_id:
                 shipment_id = match_id.group(1)
+            else:
+                match_ship = re.search(r'<ShipmentID[^>]*>([^<]+)</ShipmentID>', xml_payload)
+                if match_ship:
+                    shipment_id = match_ship.group(1)
+
     except Exception as e:
         print(f"[HealX Error] Payload decoding issue: {str(e)}")
-        xml_payload = body_str  # Fallback to raw string
+        raise HTTPException(status_code=400, detail=f"Invalid Payload Format: {str(e)}")
 
     if not xml_payload:
         raise HTTPException(status_code=422, detail="Empty XML Payload received")
@@ -149,7 +203,7 @@ async def receive_shipment_webhook(request: Request, background_tasks: Backgroun
     
     return {
         "status": "ACCEPTED",
-        "message": "HealX autonomous background processing initiated.",
+        "message": "HealX autonomous background processing initiated successfully.",
         "shipment_id": shipment_id
     }
 
